@@ -15,7 +15,15 @@ if ! command -v ffmpeg &> /dev/null; then
     exit 1
 fi
 
-python3 -m venv "$APP_DIR/.venv"
+if ! command -v conda &> /dev/null; then
+    echo "conda no encontrado. TTS==0.22.0 requiere Python <3.12 y el python3 del sistema es más nuevo."
+    exit 1
+fi
+
+if [ ! -d "$APP_DIR/.venv" ]; then
+    conda create -y -p "$APP_DIR/.venv" python=3.11
+fi
+
 "$APP_DIR/.venv/bin/pip" install --upgrade pip
 "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt"
 
