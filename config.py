@@ -15,7 +15,7 @@ MODEL_DIR = Path(os.getenv("VOICE_CLONE_MODEL_DIR", str(BASE_DIR / "models")))
 SPEAKERS_DIR = Path(os.getenv("VOICE_CLONE_SPEAKERS_DIR", str(BASE_DIR / "speakers")))
 LOG_DIR = Path(os.getenv("VOICE_CLONE_LOG_DIR", str(BASE_DIR / "logs")))
 
-MAX_TRAIN_AUDIO_SECONDS = 30
+MAX_TRAIN_AUDIO_SECONDS = 45
 MAX_TRAIN_AUDIO_BYTES = 5 * 1024 * 1024
 
 API_TOKEN = os.getenv("VOICE_CLONE_API_TOKEN", "")
