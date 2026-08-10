@@ -1,7 +1,9 @@
 """Servicio HTTP de clonación de voz: entrenamiento, síntesis completa y síntesis en streaming."""
+import asyncio
 import io
 import logging
 import secrets
+import subprocess
 
 import soundfile as sf
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -98,6 +100,28 @@ async def synthesize(request: SynthesizeRequest):
 
     audio = await gpu_worker.run(engine.synthesize, request.text, request.speaker_id, request.language)
     return Response(content=audio, media_type="audio/wav")
+
+
+@app.post("/synthesize/play", dependencies=[protected])
+async def synthesize_play(request: SynthesizeRequest):
+    """Sintetiza el audio y lo reproduce directamente en los parlantes de la Jetson."""
+    engine = VoiceEngine()
+    if not engine.has_speaker(request.speaker_id):
+        raise HTTPException(status_code=404, detail=f"Voz '{request.speaker_id}' no entrenada.")
+
+    audio = await gpu_worker.run(engine.synthesize, request.text, request.speaker_id, request.language)
+    await asyncio.to_thread(_play_audio, audio)
+    return {"status": "played"}
+
+
+def _play_audio(audio: bytes):
+    """Reproduce un WAV por los parlantes vía aplay (ALSA), bloqueando hasta que termina."""
+    try:
+        subprocess.run(["aplay", "-q", "-"], input=audio, check=True)
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="aplay no está instalado en el sistema.")
+    except subprocess.CalledProcessError as error:
+        raise HTTPException(status_code=500, detail=f"Error reproduciendo audio: {error}")
 
 
 @app.post("/synthesize/stream", dependencies=[protected])
