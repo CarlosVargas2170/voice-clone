@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from auth import verify_token
 from config import (
     API_TOKEN,
+    AUDIO_OUTPUT_DEVICE,
     LOG_DIR,
     MAX_SYNTHESIZE_TEXT_LENGTH,
     MAX_TRAIN_AUDIO_BYTES,
@@ -20,7 +21,7 @@ from config import (
     SPEAKERS_DIR,
 )
 from gpu_queue import GpuOutOfMemory, GpuQueueFull, gpu_worker
-from voice_engine import TextStreamBuffer, VoiceEngine
+from voice_engine import SAMPLE_RATE, TextStreamBuffer, VoiceEngine
 
 DEFAULT_SPEAKER = "default"
 DEFAULT_LANGUAGE = "es"
@@ -104,24 +105,30 @@ async def synthesize(request: SynthesizeRequest):
 
 @app.post("/synthesize/play", dependencies=[protected])
 async def synthesize_play(request: SynthesizeRequest):
-    """Sintetiza el audio y lo reproduce directamente en los parlantes de la Jetson."""
+    """Sintetiza el audio y lo reproduce en los parlantes de la Jetson a medida que se genera."""
     engine = VoiceEngine()
     if not engine.has_speaker(request.speaker_id):
         raise HTTPException(status_code=404, detail=f"Voz '{request.speaker_id}' no entrenada.")
 
-    audio = await gpu_worker.run(engine.synthesize, request.text, request.speaker_id, request.language)
-    await asyncio.to_thread(_play_audio, audio)
-    return {"status": "played"}
-
-
-def _play_audio(audio: bytes):
-    """Reproduce un WAV por los parlantes vía aplay (ALSA), bloqueando hasta que termina."""
     try:
-        subprocess.run(["aplay", "-q", "-"], input=audio, check=True)
+        process = await asyncio.create_subprocess_exec(
+            "aplay", "-q", "-D", AUDIO_OUTPUT_DEVICE,
+            "-f", "FLOAT_LE", "-c", "1", "-r", str(SAMPLE_RATE), "-t", "raw", "-",
+            stdin=subprocess.PIPE,
+        )
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="aplay no está instalado en el sistema.")
-    except subprocess.CalledProcessError as error:
-        raise HTTPException(status_code=500, detail=f"Error reproduciendo audio: {error}")
+
+    chunks = gpu_worker.open_stream(engine.synthesize_stream, request.text, request.speaker_id, request.language)
+    async for chunk in chunks:
+        process.stdin.write(chunk)
+        await process.stdin.drain()
+    process.stdin.close()
+    await process.wait()
+
+    if process.returncode != 0:
+        raise HTTPException(status_code=500, detail="Error reproduciendo audio.")
+    return {"status": "played"}
 
 
 @app.post("/synthesize/stream", dependencies=[protected])
