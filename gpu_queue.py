@@ -1,4 +1,4 @@
-"""Cola que serializa el acceso a la GPU: un solo trabajo de XTTS corre a la vez."""
+"""Queue that serializes access to the GPU: only one XTTS job runs at a time."""
 import asyncio
 import queue
 import threading
@@ -20,23 +20,23 @@ class GpuOutOfMemory(Exception):
 
 
 class GpuWorker:
-    """Ejecuta trabajos de GPU uno a la vez en un hilo dedicado para no saturar la memoria de la tarjeta."""
+    """Runs GPU jobs one at a time on a dedicated thread, to avoid saturating the card's memory."""
 
     def __init__(self):
         self._jobs = queue.Queue(maxsize=MAX_GPU_QUEUE_SIZE)
         threading.Thread(target=self._process_jobs, daemon=True).start()
 
     async def run(self, fn, *args, **kwargs):
-        """Encola una tarea que devuelve un único resultado y espera sin bloquear el event loop."""
+        """Queues a task that returns a single result and awaits it without blocking the event loop."""
         future = Future()
         self._enqueue(fn, args, kwargs, future)
         return await asyncio.wrap_future(future)
 
     def open_stream(self, generator_fn, *args, **kwargs):
-        """Encola de inmediato una tarea generadora; devuelve un iterable async para leer sus chunks.
+        """Queues a generator task right away; returns an async iterable to read its chunks.
 
-        Encolar de forma síncrona (no dentro de una corrutina) permite que GpuQueueFull se propague
-        antes de que el endpoint arme la respuesta, evitando romper un stream ya iniciado.
+        Queuing synchronously (not inside a coroutine) lets GpuQueueFull propagate before
+        the endpoint builds the response, avoiding breaking a stream that's already started.
         """
         output = queue.Queue()
 
@@ -66,7 +66,7 @@ class GpuWorker:
         try:
             self._jobs.put_nowait((fn, args, kwargs, future))
         except queue.Full:
-            raise GpuQueueFull("La cola de la GPU está llena, intenta de nuevo en unos segundos.")
+            raise GpuQueueFull("The GPU queue is full, try again in a few seconds.")
 
     def _process_jobs(self):
         while True:
@@ -76,7 +76,7 @@ class GpuWorker:
                 future.set_result(result)
             except torch.cuda.OutOfMemoryError as error:
                 torch.cuda.empty_cache()
-                future.set_exception(GpuOutOfMemory(f"Sin memoria de GPU disponible: {error}"))
+                future.set_exception(GpuOutOfMemory(f"No GPU memory available: {error}"))
             except Exception as error:
                 future.set_exception(error)
 

@@ -1,7 +1,7 @@
-"""Configuración centralizada de rutas y límites del servicio.
+"""Centralized configuration for the service's paths and limits.
 
-Todo vive relativo a la carpeta del proyecto, sin importar dónde se despliegue.
-Las variables de entorno se leen desde el .env ubicado junto a este archivo.
+Everything lives relative to the project folder, regardless of where it's deployed.
+Environment variables are read from the .env file next to this one.
 """
 import os
 from pathlib import Path
@@ -25,3 +25,9 @@ GPU_MEMORY_FRACTION = float(os.getenv("VOICE_CLONE_GPU_MEMORY_FRACTION", "0.9"))
 MAX_SYNTHESIZE_TEXT_LENGTH = int(os.getenv("VOICE_CLONE_MAX_TEXT_LENGTH", "2000"))
 
 AUDIO_OUTPUT_DEVICE = os.getenv("VOICE_CLONE_AUDIO_DEVICE", "default")
+
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("VOICE_CLONE_CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]

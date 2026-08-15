@@ -1,5 +1,5 @@
 [Unit]
-Description=Arranca voice-clone 1 minuto después del boot
+Description=Starts voice-clone 1 minute after boot
 
 [Timer]
 OnBootSec=1min

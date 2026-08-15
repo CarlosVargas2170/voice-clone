@@ -1,4 +1,4 @@
-"""Servicio HTTP de clonación de voz: entrenamiento, síntesis completa y síntesis en streaming."""
+"""HTTP voice-clone service: training, full synthesis, and streaming synthesis."""
 import asyncio
 import io
 import logging
@@ -7,6 +7,7 @@ import subprocess
 
 import soundfile as sf
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -14,6 +15,7 @@ from auth import verify_token
 from config import (
     API_TOKEN,
     AUDIO_OUTPUT_DEVICE,
+    CORS_ALLOWED_ORIGINS,
     LOG_DIR,
     MAX_SYNTHESIZE_TEXT_LENGTH,
     MAX_TRAIN_AUDIO_BYTES,
@@ -37,16 +39,25 @@ logger = logging.getLogger("voice-clone")
 app = FastAPI(title="Voice Clone Service")
 protected = Depends(verify_token)
 
+if CORS_ALLOWED_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ALLOWED_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
 
 @app.exception_handler(GpuQueueFull)
 def handle_gpu_queue_full(request, error):
-    """Devuelve 503 cuando la cola de GPU está saturada, en vez de tumbar la request."""
+    """Returns 503 when the GPU queue is full, instead of crashing the request."""
     return JSONResponse(status_code=503, content={"detail": str(error)})
 
 
 @app.exception_handler(GpuOutOfMemory)
 def handle_gpu_out_of_memory(request, error):
-    """Devuelve 503 cuando una síntesis agota la memoria de la GPU, en vez de un 500 genérico."""
+    """Returns 503 when a synthesis runs out of GPU memory, instead of a generic 500."""
     return JSONResponse(status_code=503, content={"detail": str(error)})
 
 
@@ -58,7 +69,7 @@ class SynthesizeRequest(BaseModel):
 
 @app.post("/train", dependencies=[protected])
 async def train(file: UploadFile, speaker_id: str = DEFAULT_SPEAKER):
-    """Sube un audio de referencia y entrena los latentes de una voz."""
+    """Uploads a reference audio and trains the latents for a voice."""
     audio_bytes = await file.read()
     _validate_train_audio(audio_bytes)
 
@@ -67,13 +78,13 @@ async def train(file: UploadFile, speaker_id: str = DEFAULT_SPEAKER):
 
     engine = VoiceEngine()
     await gpu_worker.run(engine.train, speaker_id, str(speaker_wav))
-    logger.info("Voz entrenada: %s", speaker_id)
+    logger.info("Voice trained: %s", speaker_id)
     return {"speaker_id": speaker_id, "status": "trained"}
 
 
 @app.delete("/voices/{speaker_id}", dependencies=[protected])
 def delete_voice(speaker_id: str):
-    """Elimina una voz entrenada, tanto de memoria como de disco."""
+    """Deletes a trained voice, both from memory and disk."""
     engine = VoiceEngine()
     try:
         engine.delete_speaker(speaker_id)
@@ -82,22 +93,22 @@ def delete_voice(speaker_id: str):
 
     source_wav = SPEAKERS_DIR / f"{speaker_id}_source.wav"
     source_wav.unlink(missing_ok=True)
-    logger.info("Voz eliminada: %s", speaker_id)
+    logger.info("Voice deleted: %s", speaker_id)
     return {"speaker_id": speaker_id, "status": "deleted"}
 
 
 @app.get("/voices", dependencies=[protected])
 def list_voices():
-    """Lista las voces actualmente entrenadas."""
+    """Lists the currently trained voices."""
     return {"speakers": VoiceEngine().list_speakers()}
 
 
 @app.post("/synthesize", dependencies=[protected])
 async def synthesize(request: SynthesizeRequest):
-    """Devuelve el audio completo generado a partir de un texto."""
+    """Returns the full audio generated from a text."""
     engine = VoiceEngine()
     if not engine.has_speaker(request.speaker_id):
-        raise HTTPException(status_code=404, detail=f"Voz '{request.speaker_id}' no entrenada.")
+        raise HTTPException(status_code=404, detail=f"Voice '{request.speaker_id}' not trained.")
 
     audio = await gpu_worker.run(engine.synthesize, request.text, request.speaker_id, request.language)
     return Response(content=audio, media_type="audio/wav")
@@ -105,10 +116,10 @@ async def synthesize(request: SynthesizeRequest):
 
 @app.post("/synthesize/play", dependencies=[protected])
 async def synthesize_play(request: SynthesizeRequest):
-    """Sintetiza el audio y lo reproduce en los parlantes de la Jetson a medida que se genera."""
+    """Synthesizes the audio, plays it on the Jetson's speakers, and streams it back to the client."""
     engine = VoiceEngine()
     if not engine.has_speaker(request.speaker_id):
-        raise HTTPException(status_code=404, detail=f"Voz '{request.speaker_id}' no entrenada.")
+        raise HTTPException(status_code=404, detail=f"Voice '{request.speaker_id}' not trained.")
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -117,26 +128,30 @@ async def synthesize_play(request: SynthesizeRequest):
             stdin=subprocess.PIPE,
         )
     except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="aplay no está instalado en el sistema.")
+        raise HTTPException(status_code=500, detail="aplay is not installed on the system.")
 
     chunks = gpu_worker.open_stream(engine.synthesize_stream, request.text, request.speaker_id, request.language)
-    async for chunk in chunks:
-        process.stdin.write(chunk)
-        await process.stdin.drain()
-    process.stdin.close()
-    await process.wait()
+    return StreamingResponse(_play_and_forward(process, chunks), media_type="application/octet-stream")
 
-    if process.returncode != 0:
-        raise HTTPException(status_code=500, detail="Error reproduciendo audio.")
-    return {"status": "played"}
+
+async def _play_and_forward(process: asyncio.subprocess.Process, chunks):
+    """Sends each chunk to aplay and yields it to the client, so both play back in sync."""
+    try:
+        async for chunk in chunks:
+            process.stdin.write(chunk)
+            await process.stdin.drain()
+            yield chunk
+    finally:
+        process.stdin.close()
+        await process.wait()
 
 
 @app.post("/synthesize/stream", dependencies=[protected])
 def synthesize_stream(request: SynthesizeRequest):
-    """Devuelve el audio en chunks a medida que se va generando."""
+    """Returns the audio in chunks as it gets generated."""
     engine = VoiceEngine()
     if not engine.has_speaker(request.speaker_id):
-        raise HTTPException(status_code=404, detail=f"Voz '{request.speaker_id}' no entrenada.")
+        raise HTTPException(status_code=404, detail=f"Voice '{request.speaker_id}' not trained.")
 
     chunks = gpu_worker.open_stream(engine.synthesize_stream, request.text, request.speaker_id, request.language)
     return StreamingResponse(chunks, media_type="application/octet-stream")
@@ -144,10 +159,10 @@ def synthesize_stream(request: SynthesizeRequest):
 
 @app.websocket("/synthesize/stream-text")
 async def synthesize_stream_text(websocket: WebSocket):
-    """Recibe texto en fragmentos y devuelve audio en fragmentos a medida que hay oraciones completas."""
+    """Receives text in fragments and returns audio in chunks as complete sentences become available."""
     query = websocket.query_params
     if not _websocket_token_is_valid(query.get("token")):
-        await websocket.close(code=4401, reason="Token inválido o ausente.")
+        await websocket.close(code=4401, reason="Invalid or missing token.")
         return
 
     await websocket.accept()
@@ -159,7 +174,7 @@ async def synthesize_stream_text(websocket: WebSocket):
     language = query.get("language", DEFAULT_LANGUAGE)
 
     if not engine.has_speaker(speaker_id):
-        await websocket.close(code=4404, reason=f"Voz '{speaker_id}' no entrenada.")
+        await websocket.close(code=4404, reason=f"Voice '{speaker_id}' not trained.")
         return
 
     try:
@@ -167,7 +182,7 @@ async def synthesize_stream_text(websocket: WebSocket):
             text_chunk = await websocket.receive_text()
             total_received += len(text_chunk)
             if total_received > MAX_SYNTHESIZE_TEXT_LENGTH:
-                await websocket.close(code=1009, reason="Texto total excede el límite permitido.")
+                await websocket.close(code=1009, reason="Total text exceeds the allowed limit.")
                 return
 
             if text_chunk == "<END>":
@@ -188,38 +203,38 @@ async def synthesize_stream_text(websocket: WebSocket):
 
 
 async def _stream_sentence(websocket: WebSocket, engine: VoiceEngine, sentence: str, speaker_id: str, language: str):
-    """Sintetiza una oración y envía sus chunks de audio por el websocket."""
+    """Synthesizes one sentence and sends its audio chunks over the websocket."""
     chunks = gpu_worker.open_stream(engine.synthesize_stream, sentence, speaker_id, language)
     async for chunk in chunks:
         await websocket.send_bytes(chunk)
 
 
 def _websocket_token_is_valid(token: str | None) -> bool:
-    """Valida el token recibido por query param, único mecanismo disponible en un handshake de websocket."""
+    """Validates the token received as a query param, the only mechanism available in a websocket handshake."""
     if not token or not API_TOKEN:
         return False
     return secrets.compare_digest(token, API_TOKEN)
 
 
 def _validate_train_audio(audio_bytes: bytes):
-    """Rechaza audios de entrenamiento que excedan el tamaño o duración permitidos."""
+    """Rejects training audio that exceeds the allowed size or duration."""
     if len(audio_bytes) > MAX_TRAIN_AUDIO_BYTES:
-        raise HTTPException(status_code=413, detail=f"El audio supera el máximo de {MAX_TRAIN_AUDIO_BYTES} bytes.")
+        raise HTTPException(status_code=413, detail=f"Audio exceeds the maximum of {MAX_TRAIN_AUDIO_BYTES} bytes.")
 
     try:
         info = sf.info(io.BytesIO(audio_bytes))
     except Exception:
-        raise HTTPException(status_code=400, detail="Archivo de audio inválido, se espera un WAV.")
+        raise HTTPException(status_code=400, detail="Invalid audio file, expected a WAV.")
 
     if info.duration > MAX_TRAIN_AUDIO_SECONDS:
         raise HTTPException(
-            status_code=413, detail=f"El audio supera el máximo de {MAX_TRAIN_AUDIO_SECONDS} segundos."
+            status_code=413, detail=f"Audio exceeds the maximum of {MAX_TRAIN_AUDIO_SECONDS} seconds."
         )
 
 
 @app.get("/health")
 def health():
-    """Reporta si el modelo está cargado y listo para atender solicitudes."""
+    """Reports whether the model is loaded and ready to serve requests."""
     engine = VoiceEngine()
     return {
         "status": "ok",
