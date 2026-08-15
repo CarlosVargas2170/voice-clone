@@ -86,11 +86,19 @@ class VoiceEngine:
 
     def synthesize(self, text: str, speaker_id: str, language: str = "es") -> bytes:
         """Generates the full audio for a text and returns it as WAV."""
+        return wav_bytes(self._synthesize_array(text, speaker_id, language))
+
+    def synthesize_raw(self, text: str, speaker_id: str, language: str = "es") -> bytes:
+        """Generates the full audio for a text and returns it as raw float32 PCM (no header)."""
+        audio = self._synthesize_array(text, speaker_id, language)
+        return audio.astype(np.float32).tobytes()
+
+    def _synthesize_array(self, text: str, speaker_id: str, language: str) -> np.ndarray:
         gpt_latent, speaker_embedding = self._latents(speaker_id)
         output = self.model.inference(
             text, language, gpt_latent, speaker_embedding, enable_text_splitting=True
         )
-        return wav_bytes(output["wav"])
+        return output["wav"]
 
     def synthesize_stream(self, text: str, speaker_id: str, language: str = "es"):
         """Generates audio in chunks as the model produces them.

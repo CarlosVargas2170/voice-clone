@@ -165,11 +165,16 @@ curl -X POST http://localhost:9000/synthesize \
 
 ### `POST /synthesize/play`
 
-Synthesizes the audio, plays it directly on the Jetson's speakers (via
-`aplay`/ALSA), and **at the same time** streams it back to the client (same
-format as `/synthesize/stream`: raw float32 PCM chunks), so the frontend can
-play it back in sync. Both start playing as soon as audio is available,
-without waiting for the whole synthesis to finish.
+Synthesizes the full audio first, then plays it directly on the Jetson's
+speakers (via `aplay`/ALSA) and streams it back to the client at the same
+time (same chunk format as `/synthesize/stream`: raw float32 PCM), so the
+frontend can play it back in sync.
+
+Full generation happens before any audio is sent — on this hardware, XTTS
+streaming generation can't keep up with real-time playback (roughly 1.5-2x
+slower), so chunk-by-chunk streaming from the model produces audible
+stutters. Generating the whole clip first adds latency before playback
+starts, but once it starts it plays without gaps.
 
 ```bash
 curl -X POST http://localhost:9000/synthesize/play \

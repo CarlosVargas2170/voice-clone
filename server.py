@@ -114,12 +114,20 @@ async def synthesize(request: SynthesizeRequest):
     return Response(content=audio, media_type="audio/wav")
 
 
+PLAYBACK_CHUNK_BYTES = 24_000 * 4 // 5  # ~200ms of float32 mono audio at SAMPLE_RATE
+
+
 @app.post("/synthesize/play", dependencies=[protected])
 async def synthesize_play(request: SynthesizeRequest):
-    """Synthesizes the audio, plays it on the Jetson's speakers, and streams it back to the client."""
+    """Synthesizes the full audio first (the Jetson GPU can't keep up with real-time
+    generation, so streaming chunk-by-chunk produces choppy playback), then plays it
+    on the Jetson's speakers and streams it back to the client at the same time.
+    """
     engine = VoiceEngine()
     if not engine.has_speaker(request.speaker_id):
         raise HTTPException(status_code=404, detail=f"Voice '{request.speaker_id}' not trained.")
+
+    audio = await gpu_worker.run(engine.synthesize_raw, request.text, request.speaker_id, request.language)
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -130,14 +138,14 @@ async def synthesize_play(request: SynthesizeRequest):
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="aplay is not installed on the system.")
 
-    chunks = gpu_worker.open_stream(engine.synthesize_stream, request.text, request.speaker_id, request.language)
-    return StreamingResponse(_play_and_forward(process, chunks), media_type="application/octet-stream")
+    return StreamingResponse(_play_and_forward(process, audio), media_type="application/octet-stream")
 
 
-async def _play_and_forward(process: asyncio.subprocess.Process, chunks):
-    """Sends each chunk to aplay and yields it to the client, so both play back in sync."""
+async def _play_and_forward(process: asyncio.subprocess.Process, audio: bytes):
+    """Sends the already-generated audio to aplay and to the client in lockstep chunks."""
     try:
-        async for chunk in chunks:
+        for offset in range(0, len(audio), PLAYBACK_CHUNK_BYTES):
+            chunk = audio[offset:offset + PLAYBACK_CHUNK_BYTES]
             process.stdin.write(chunk)
             await process.stdin.drain()
             yield chunk
