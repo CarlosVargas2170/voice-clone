@@ -38,11 +38,15 @@ mkdir -p "$USER_SYSTEMD_DIR"
 sed \
     -e "s|__APP_DIR__|$APP_DIR|g" \
     "$APP_DIR/deploy/voice-clone.service.template" > "$USER_SYSTEMD_DIR/voice-clone.service"
+cp "$APP_DIR/deploy/voice-clone.timer" "$USER_SYSTEMD_DIR/voice-clone.timer"
 
 systemctl --user daemon-reload
 
 echo "Instalación lista. Corre:"
-echo "  systemctl --user enable --now voice-clone"
+echo "  systemctl --user enable --now voice-clone.timer"
+echo ""
+echo "Esto arrancará voice-clone.service automáticamente 1 minuto después de cada boot."
+echo "(No uses 'enable --now voice-clone' directamente, o arrancará sin el retraso)."
 echo ""
 echo "Para que el servicio siga corriendo después de cerrar la sesión SSH, alguien con sudo debe correr una vez:"
 echo "  sudo loginctl enable-linger $(whoami)"

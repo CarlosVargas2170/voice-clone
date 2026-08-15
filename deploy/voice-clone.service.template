@@ -8,6 +8,3 @@ WorkingDirectory=__APP_DIR__
 ExecStart=__APP_DIR__/.venv/bin/uvicorn server:app --host 0.0.0.0 --port 9000 --workers 1
 Restart=on-failure
 RestartSec=5
-
-[Install]
-WantedBy=default.target

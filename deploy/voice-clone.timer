@@ -1,0 +1,9 @@
+[Unit]
+Description=Arranca voice-clone 1 minuto después del boot
+
+[Timer]
+OnBootSec=1min
+Unit=voice-clone.service
+
+[Install]
+WantedBy=timers.target
