@@ -5,6 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=__APP_DIR__
+Environment=LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64
 ExecStart=__APP_DIR__/.venv/bin/uvicorn server:app --host 0.0.0.0 --port 9000 --workers 1
 Restart=on-failure
 RestartSec=5
