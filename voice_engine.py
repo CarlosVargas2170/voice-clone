@@ -1,8 +1,10 @@
 """Singleton voice-clone engine built on XTTS v2."""
 import io
+import logging
 import os
 import re
 import threading
+import time
 
 import numpy as np
 import soundfile as sf
@@ -14,6 +16,8 @@ from config import GPU_MEMORY_FRACTION, MODEL_DIR, SPEAKERS_DIR
 MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
 SAMPLE_RATE = 24000
 SENTENCE_END = re.compile(r".*?[.!?]\s")
+
+logger = logging.getLogger("voice-clone")
 
 
 class VoiceEngine:
@@ -89,12 +93,26 @@ class VoiceEngine:
         return wav_bytes(output["wav"])
 
     def synthesize_stream(self, text: str, speaker_id: str, language: str = "es"):
-        """Generates audio in chunks as the model produces them."""
+        """Generates audio in chunks as the model produces them.
+
+        Logs generation time vs. audio duration per chunk (temporary diagnostic for
+        choppy playback) — a ratio above 1.0 means the GPU can't keep up with real time.
+        """
         gpt_latent, speaker_embedding = self._latents(speaker_id)
+        last_yield = time.monotonic()
         for chunk in self.model.inference_stream(
             text, language, gpt_latent, speaker_embedding, enable_text_splitting=True
         ):
-            yield chunk.detach().cpu().numpy().astype(np.float32).tobytes()
+            audio = chunk.detach().cpu().numpy().astype(np.float32)
+            now = time.monotonic()
+            generation_time = now - last_yield
+            audio_duration = len(audio) / SAMPLE_RATE
+            logger.info(
+                "chunk: %d samples, %.3fs audio, %.3fs to generate, realtime ratio %.2f",
+                len(audio), audio_duration, generation_time, generation_time / audio_duration,
+            )
+            last_yield = now
+            yield audio.tobytes()
 
 
 class TextStreamBuffer:
