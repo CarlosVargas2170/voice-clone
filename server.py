@@ -126,16 +126,20 @@ async def synthesize_stream_text(websocket: WebSocket):
 
     speaker_id = query.get("speaker_id", DEFAULT_SPEAKER)
     language = query.get("language", DEFAULT_LANGUAGE)
+    logger.info("WS conectado speaker_id=%s language=%s", speaker_id, language)
 
     if not engine.has_speaker(speaker_id):
+        logger.warning("WS rechazado: voz '%s' no entrenada", speaker_id)
         await websocket.close(code=4404, reason=f"Voz '{speaker_id}' no entrenada.")
         return
 
     try:
         while True:
             text_chunk = await websocket.receive_text()
+            logger.info("WS recibido (%d chars): %r", len(text_chunk), text_chunk)
             total_received += len(text_chunk)
             if total_received > MAX_SYNTHESIZE_TEXT_LENGTH:
+                logger.warning("WS texto total excede el límite (%d)", total_received)
                 await websocket.close(code=1009, reason="Texto total excede el límite permitido.")
                 return
 
@@ -146,13 +150,17 @@ async def synthesize_stream_text(websocket: WebSocket):
                 break
 
             for sentence in text_buffer.feed(text_chunk):
+                logger.info("WS sintetizando oración: %r", sentence)
                 await _stream_sentence(websocket, engine, sentence, speaker_id, language)
     except WebSocketDisconnect:
+        logger.info("WS desconectado")
         return
     except (GpuQueueFull, GpuOutOfMemory) as error:
+        logger.warning("WS error de GPU: %s", error)
         await websocket.close(code=1013, reason=str(error))
         return
 
+    logger.info("WS turno completo, cerrando")
     await websocket.close()
 
 
