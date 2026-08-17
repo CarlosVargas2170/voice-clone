@@ -52,7 +52,7 @@ fi
 # The CUDA LD_LIBRARY_PATH is needed both in the venv (manual use) and in the
 # systemd service (Environment= in voice-clone.service.template).
 if ! grep -q "LD_LIBRARY_PATH" "$APP_DIR/.venv/bin/activate"; then
-    echo "export LD_LIBRARY_PATH=$CUDA_LIB_PATH:\$LD_LIBRARY_PATH" >> "$APP_DIR/.venv/bin/activate"
+    echo "export LD_LIBRARY_PATH=$CUDA_LIB_PATH:\${LD_LIBRARY_PATH:-}" >> "$APP_DIR/.venv/bin/activate"
 fi
 
 source "$APP_DIR/.venv/bin/activate"
