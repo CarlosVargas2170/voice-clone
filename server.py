@@ -49,6 +49,15 @@ if CORS_ALLOWED_ORIGINS:
     )
 
 
+@app.middleware("http")
+async def allow_private_network(request, call_next):
+    """Answers Chrome's Private Network Access preflight so public HTTPS pages can reach this LAN/Tailscale IP."""
+    response = await call_next(request)
+    if request.headers.get("access-control-request-private-network") == "true":
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
+
+
 @app.exception_handler(GpuQueueFull)
 def handle_gpu_queue_full(request, error):
     """Returns 503 when the GPU queue is full, instead of crashing the request."""
