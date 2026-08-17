@@ -133,7 +133,7 @@ async def synthesize_play(request: SynthesizeRequest):
         process = await asyncio.create_subprocess_exec(
             "aplay", "-q", "-D", AUDIO_OUTPUT_DEVICE,
             "-f", "FLOAT_LE", "-c", "1", "-r", str(SAMPLE_RATE), "-t", "raw", "-",
-            stdin=subprocess.PIPE,
+            stdin=subprocess.PIPE, stderr=subprocess.PIPE,
         )
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="aplay is not installed on the system.")
@@ -151,7 +151,13 @@ async def _play_and_forward(process: asyncio.subprocess.Process, audio: bytes):
             yield chunk
     finally:
         process.stdin.close()
+        stderr = await process.stderr.read()
         await process.wait()
+        if process.returncode != 0:
+            logger.warning(
+                "aplay failed (device=%s, code=%d): %s",
+                AUDIO_OUTPUT_DEVICE, process.returncode, stderr.decode(errors="replace").strip(),
+            )
 
 
 @app.post("/synthesize/stream", dependencies=[protected])
