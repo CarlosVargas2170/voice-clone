@@ -146,6 +146,7 @@ async def synthesize_stream_text(websocket: WebSocket):
             if text_chunk == "<END>":
                 remainder = text_buffer.flush()
                 if remainder:
+                    logger.info("WS sintetizando oración final: %r", remainder)
                     await _stream_sentence(websocket, engine, remainder, speaker_id, language)
                 break
 
