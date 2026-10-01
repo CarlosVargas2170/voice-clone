@@ -1,4 +1,4 @@
-"""Extrae y limpia el audio de main.mp4 para usarlo como muestra de voz para XTTS v2."""
+"""Extracts and cleans up the audio from main.mp4 to use as a voice sample for XTTS v2."""
 import subprocess
 import sys
 from pathlib import Path
@@ -10,11 +10,11 @@ OUT_WAV = OUT_DIR / "voice_sample.wav"
 
 def main():
     if not SRC.exists():
-        sys.exit(f"No se encontró {SRC.resolve()}. Copia tu video main.mp4 en esta carpeta.")
+        sys.exit(f"{SRC.resolve()} not found. Copy your main.mp4 video into this folder.")
 
     OUT_DIR.mkdir(exist_ok=True)
 
-    # XTTS v2 espera mono, 22050 Hz, 16-bit PCM.
+    # XTTS v2 expects mono, 22050 Hz, 16-bit PCM.
     cmd = [
         "ffmpeg", "-y",
         "-i", str(SRC),
@@ -24,7 +24,7 @@ def main():
         str(OUT_WAV),
     ]
     subprocess.run(cmd, check=True)
-    print(f"Audio extraído en: {OUT_WAV.resolve()}")
+    print(f"Audio extracted to: {OUT_WAV.resolve()}")
 
 
 if __name__ == "__main__":

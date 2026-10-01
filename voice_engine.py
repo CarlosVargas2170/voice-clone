@@ -1,8 +1,10 @@
-"""Motor singleton de clonación de voz sobre XTTS v2."""
+"""Singleton voice-clone engine built on XTTS v2."""
 import io
+import logging
 import os
 import re
 import threading
+import time
 
 import numpy as np
 import soundfile as sf
@@ -15,9 +17,11 @@ MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
 SAMPLE_RATE = 24000
 SENTENCE_END = re.compile(r".*?[.!?]\s")
 
+logger = logging.getLogger("voice-clone")
+
 
 class VoiceEngine:
-    """Único punto de acceso al modelo. Se carga una vez y se reutiliza en todo el servicio."""
+    """Single access point to the model. Loaded once and reused across the whole service."""
 
     _instance = None
     _instance_lock = threading.Lock()
@@ -49,22 +53,22 @@ class VoiceEngine:
         return SPEAKERS_DIR / f"{speaker_id}.pt"
 
     def _load_saved_speakers(self):
-        """Carga en memoria los latentes de voces ya entrenadas en corridas anteriores."""
+        """Loads into memory the latents of voices trained in previous runs."""
         for path in SPEAKERS_DIR.glob("*.pt"):
             gpt_latent, speaker_embedding = torch.load(path, map_location="cpu")
             self.speakers[path.stem] = (gpt_latent, speaker_embedding)
 
     def train(self, speaker_id: str, speaker_wav_path: str):
-        """Calcula los latentes de una voz a partir de un audio de referencia y los persiste en disco."""
+        """Computes the latents of a voice from a reference audio and persists them to disk."""
         gpt_latent, speaker_embedding = self.model.get_conditioning_latents(audio_path=speaker_wav_path)
         with self.speakers_lock:
             self.speakers[speaker_id] = (gpt_latent, speaker_embedding)
             torch.save((gpt_latent.cpu(), speaker_embedding.cpu()), self._speaker_path(speaker_id))
 
     def delete_speaker(self, speaker_id: str):
-        """Elimina una voz entrenada de memoria y de disco."""
+        """Deletes a trained voice from memory and disk."""
         if not self.has_speaker(speaker_id):
-            raise KeyError(f"Voz '{speaker_id}' no existe.")
+            raise KeyError(f"Voice '{speaker_id}' does not exist.")
         with self.speakers_lock:
             del self.speakers[speaker_id]
             self._speaker_path(speaker_id).unlink(missing_ok=True)
@@ -77,34 +81,56 @@ class VoiceEngine:
 
     def _latents(self, speaker_id: str):
         if not self.has_speaker(speaker_id):
-            raise KeyError(f"Voz '{speaker_id}' no entrenada. Llama antes a /train.")
+            raise KeyError(f"Voice '{speaker_id}' not trained. Call /train first.")
         return self.speakers[speaker_id]
 
     def synthesize(self, text: str, speaker_id: str, language: str = "es") -> bytes:
-        """Genera el audio completo de un texto y lo devuelve como WAV."""
+        """Generates the full audio for a text and returns it as WAV."""
+        return wav_bytes(self._synthesize_array(text, speaker_id, language))
+
+    def synthesize_raw(self, text: str, speaker_id: str, language: str = "es") -> bytes:
+        """Generates the full audio for a text and returns it as raw float32 PCM (no header)."""
+        audio = self._synthesize_array(text, speaker_id, language)
+        return audio.astype(np.float32).tobytes()
+
+    def _synthesize_array(self, text: str, speaker_id: str, language: str) -> np.ndarray:
         gpt_latent, speaker_embedding = self._latents(speaker_id)
         output = self.model.inference(
             text, language, gpt_latent, speaker_embedding, enable_text_splitting=True
         )
-        return wav_bytes(output["wav"])
+        return output["wav"]
 
     def synthesize_stream(self, text: str, speaker_id: str, language: str = "es"):
-        """Genera audio en chunks a medida que el modelo los produce."""
+        """Generates audio in chunks as the model produces them.
+
+        Logs generation time vs. audio duration per chunk (temporary diagnostic for
+        choppy playback) — a ratio above 1.0 means the GPU can't keep up with real time.
+        """
         gpt_latent, speaker_embedding = self._latents(speaker_id)
+        last_yield = time.monotonic()
         for chunk in self.model.inference_stream(
             text, language, gpt_latent, speaker_embedding, enable_text_splitting=True
         ):
-            yield chunk.detach().cpu().numpy().astype(np.float32).tobytes()
+            audio = chunk.detach().cpu().numpy().astype(np.float32)
+            now = time.monotonic()
+            generation_time = now - last_yield
+            audio_duration = len(audio) / SAMPLE_RATE
+            logger.info(
+                "chunk: %d samples, %.3fs audio, %.3fs to generate, realtime ratio %.2f",
+                len(audio), audio_duration, generation_time, generation_time / audio_duration,
+            )
+            last_yield = now
+            yield audio.tobytes()
 
 
 class TextStreamBuffer:
-    """Acumula texto que llega en fragmentos y libera oraciones completas para sintetizar."""
+    """Accumulates text arriving in fragments and releases complete sentences ready for synthesis."""
 
     def __init__(self):
         self.buffer = ""
 
     def feed(self, chunk: str) -> list[str]:
-        """Agrega texto al buffer y devuelve las oraciones completas listas para sintetizar."""
+        """Adds text to the buffer and returns the complete sentences ready for synthesis."""
         self.buffer += chunk
         sentences = []
         while True:
@@ -116,7 +142,7 @@ class TextStreamBuffer:
         return sentences
 
     def flush(self) -> str | None:
-        """Devuelve el texto restante en el buffer, si queda alguno."""
+        """Returns the remaining text in the buffer, if any is left."""
         remainder = self.buffer.strip()
         self.buffer = ""
         return remainder or None
